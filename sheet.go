@@ -3,156 +3,11 @@ package main
 import (
 	"fmt"
 	"io"
-	"regexp"
-	"strconv"
-	"strings"
 )
-
-var addrRE *regexp.Regexp
-
-type CellAddress struct {
-	col string
-	row uint32
-}
-
-const maxColDigits = 2
-const lastCol = "ZZ"
-
-func CellAddr(addr string) (CellAddress, error) {
-	var err error
-	if addrRE == nil {
-		addrRE, err = regexp.Compile("([A-Za-z]+)([0-9]+)")
-		if err != nil {
-			return CellAddress{}, err
-		}
-	}
-	matches := addrRE.FindStringSubmatch(addr)
-	//fmt.Printf("MATCHES: %#v\n", matches)
-	if len(matches) != 3 {
-		return CellAddress{}, fmt.Errorf("Invalid cell address '%s'", addr)
-	}
-	colstr := strings.ToUpper(matches[1])
-	rowstr := matches[2]
-
-	// Artificially limit number of columns to 26^2 (2 letters)
-	if len(colstr) > maxColDigits {
-		return CellAddress{}, fmt.Errorf("Invalid cell address '%s': Column address too big", addr)
-	}
-
-	row, err := strconv.ParseUint(rowstr, 10, 32)
-	if err != nil {
-		return CellAddress{}, fmt.Errorf("Invalid cell address '%s': %v", addr, err)
-	}
-
-	return CellAddress{colstr, uint32(row)}, nil
-}
-
-func (ca CellAddress) LEQCol(ca2 CellAddress) bool {
-	if ca.col == ca2.col {
-		return true
-	}
-	return ca.LessCol(ca2)
-}
-
-func (ca CellAddress) LessCol(ca2 CellAddress) bool {
-	if len(ca.col) < len(ca2.col) {
-		return true
-	} else if len(ca.col) > len(ca2.col) {
-		return false
-	}
-
-	for i := range ca.col {
-		if ca.col[i] < ca2.col[i] {
-			return true
-		} else if ca.col[i] > ca2.col[i] {
-			return false
-		}
-	}
-	// The column address is the same.
-	//return ca.row < ca2.row
-	return false
-}
-
-func (ca CellAddress) NextCol() (CellAddress, error) {
-	if ca.col == lastCol {
-		return CellAddress{}, fmt.Errorf("No more columns.")
-	}
-	ret := ca
-	runes := []rune(ret.col)
-	activeCol := len(runes) - 1
-	for activeCol >= 0 {
-		if runes[activeCol] == 'Z' {
-			runes[activeCol] = 'A'
-			if activeCol == 0 {
-				runes = append([]rune{'A'}, runes...)
-				break
-			} else {
-				activeCol -= 1
-			}
-		} else {
-			//fmt.Printf("runes[%d] += 1: %s\n", activeCol, string(runes))
-			runes[activeCol] += 1
-			break
-		}
-	}
-	ret.col = string(runes)
-	return ret, nil
-}
-
-func (ca CellAddress) String() string {
-	return fmt.Sprintf("%s%d", ca.col, ca.row)
-}
-
-const (
-	cell_transient = iota
-	cell_val
-	cell_string
-	cell_expr
-)
-
-type Cell struct {
-	cell_type  int
-	content    string
-	val        float64
-	expstr     string
-	exp        *Expression
-	expErr     error
-	upstream   []*Cell
-	downstream []*Cell
-}
-
-func (c *Cell) addDownstream(c2 *Cell) {
-	c.downstream = append(c.downstream, c2)
-}
-
-func (c *Cell) removeDownstream(c2 *Cell) {
-	for i := range c.downstream {
-		if c.downstream[i] == c2 {
-			c.downstream[i] = c.downstream[len(c.downstream)-1]
-			c.downstream[len(c.downstream)-1] = nil
-			c.downstream = c.downstream[:len(c.downstream)-1]
-			return
-		}
-	}
-}
-
-func (c *Cell) editValue() string {
-	switch c.cell_type {
-	case cell_transient:
-		return ""
-	case cell_val:
-		return fmt.Sprintf("%f", c.val)
-	case cell_string:
-		return c.content
-	case cell_expr:
-		return c.expstr
-	default:
-		return ""
-	}
-}
 
 type Sheet struct {
-	mtx map[string]map[uint32]*Cell
+	mtx           map[string]map[uint32]*Cell
+	OnCellUpdated func(addr string, c *Cell)
 }
 
 func NewSheet() *Sheet {
@@ -166,74 +21,16 @@ func (s *Sheet) SetContent(addr string, content string) error {
 		//fmt.Printf("ERROR!!! %#v\n", err)
 		return err
 	}
+
+	if content == "" {
+		cell := s.cellAt(a)
+		if cell == nil {
+			return nil
+		}
+	}
+
 	cell := s.cellOrNewAt(a)
-	//fmt.Printf("Setting content for %s@%p: %s.\n", addr, cell, content)
-
-	if len(cell.upstream) > 0 {
-		for i := range cell.upstream {
-			cell.upstream[i].removeDownstream(cell)
-		}
-		cell.upstream = nil
-	}
-
-	if strings.HasPrefix(content, "=") {
-		cell.cell_type = cell_expr
-		cell.expstr = content
-		cell.exp = nil
-		expr, err := ParseExpression(content)
-		if err != nil {
-			cell.expErr = err
-			cell.content = "##ERROR"
-			return nil
-		}
-		upAddrs, err := expr.upstreamAddrs()
-		if err != nil {
-			cell.expErr = err
-			cell.content = "##ERROR"
-			return nil
-		}
-
-		cell.upstream = make([]*Cell, len(upAddrs))
-		for i := range upAddrs {
-			cell.upstream[i] = s.cellOrNewAt(upAddrs[i])
-			cell.upstream[i].addDownstream(cell)
-		}
-
-		cell.exp = expr
-	} else if f, err := strconv.ParseFloat(content, 64); err == nil {
-		cell.cell_type = cell_val
-		cell.val = f
-		cell.content = fmt.Sprintf("%f", f)
-	} else {
-		cell.cell_type = cell_string
-		cell.content = content
-	}
-	s.recalculateCell(cell)
-	return nil
-}
-
-func (s *Sheet) recalculateCell(cell *Cell) {
-	defer func() {
-		for i := range cell.downstream {
-			s.recalculateCell(cell.downstream[i])
-		}
-	}()
-	if cell.cell_type != cell_expr || cell.exp == nil {
-		return
-	}
-
-	//fmt.Printf("RECALCULATING CELL @ %p -> ", cell)
-	f, err := cell.exp.Eval(s)
-	if err != nil {
-		//fmt.Println("ERROR")
-		cell.expErr = err
-		cell.content = "##ERROR"
-		return
-	}
-	cell.expErr = nil
-	cell.val = f
-	//fmt.Printf("%f\n", f)
-	cell.content = fmt.Sprintf("%f", f)
+	return cell.SetContent(content)
 }
 
 func (s *Sheet) setCellAt(addr CellAddress, c *Cell) {
@@ -255,9 +52,8 @@ func (s *Sheet) cellOrNewAt(addr CellAddress) *Cell {
 
 	cell, ok := rows[addr.row]
 	if !ok {
-		cell = new(Cell)
+		cell = NewCell(addr, s)
 		rows[addr.row] = cell
-		//s.setCellAt(addr, cell)
 	}
 	return cell
 }
@@ -281,22 +77,7 @@ func (s *Sheet) ValueAt(addr string) (float64, error) {
 		// Empty cells have zero value
 		return 0, nil
 	}
-
-	switch cell.cell_type {
-	case cell_transient:
-		return 0, nil
-	case cell_string:
-		return 0, fmt.Errorf("Cannot get numeric value from %s", addr)
-	case cell_val:
-		return cell.val, nil
-	case cell_expr:
-		if cell.expErr != nil {
-			return 0, fmt.Errorf("%s: %v", addr, cell.expErr)
-		}
-		return cell.val, nil
-	default:
-		return 0, fmt.Errorf("Bad Cell")
-	}
+	return cell.Value()
 }
 
 func (s *Sheet) ContentAt(addr string) (string, error) {
@@ -304,31 +85,29 @@ func (s *Sheet) ContentAt(addr string) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	return s.contentAt(a), nil
+	return s.contentAt(a)
 }
 
-func (s *Sheet) contentAt(addr CellAddress) string {
+func (s *Sheet) contentAt(addr CellAddress) (string, error) {
 	cell := s.cellAt(addr)
 	if cell == nil {
-		return ""
+		return "", nil
+	}
+	return cell.Content()
+}
+
+func (s *Sheet) EditAt(addr string) (string, error) {
+	a, err := CellAddr(addr)
+	if err != nil {
+		return "", err
 	}
 
-	switch cell.cell_type {
-	case cell_transient:
-		return ""
-	case cell_string:
-		return cell.content
-	case cell_val:
-		return fmt.Sprintf("%f", cell.val)
-	case cell_expr:
-		if cell.expErr != nil {
-			return fmt.Sprintf("%s%d: %v", addr.col, addr.row, cell.expErr)
-		}
-		return fmt.Sprintf("%f", cell.val)
-	default:
-		panic(fmt.Sprintf("Invalid cell type %d", cell.cell_type))
+	cell := s.cellAt(a)
+	if cell == nil {
+		// Empty cells have zero value
+		return "", nil
 	}
-
+	return cell.EditValue()
 }
 
 func (s *Sheet) maxCol() CellAddress {
@@ -362,7 +141,7 @@ func (s *Sheet) WriteCSV(w io.Writer) {
 		var err error
 		col := CellAddress{col: "A", row: row}
 		for {
-			c := s.contentAt(col)
+			c, _ := s.contentAt(col) // We ignore errors
 			fmt.Fprintf(w, "%s,", c)
 			col, err = col.NextCol()
 			if err != nil {
@@ -376,7 +155,7 @@ func (s *Sheet) WriteCSV(w io.Writer) {
 	}
 }
 
-func (s *Sheet) WriteRange(start CellAddress, end CellAddress, w io.Writer) {
+func (s *Sheet) WriteRange(start CellAddress, end CellAddress, w io.Writer) error {
 	for row := start.row; row <= end.row; row++ {
 		col := CellAddress{col: start.col, row: row}
 		for ; col.LEQCol(end); col, _ = col.NextCol() {
@@ -387,16 +166,20 @@ func (s *Sheet) WriteRange(start CellAddress, end CellAddress, w io.Writer) {
 				continue
 			}
 
-			command := cell.editValue()
+			command, err := cell.EditValue()
+			if err != nil {
+				return err
+			}
 			w.Write([]byte(fmt.Sprintf("%s %d %s\n", col, len(command), command)))
 		}
 	}
+	return nil
 }
 
 func Read(r io.Reader) (CellAddress, string, error) {
 	var addr string
 	var clen uint32
-	n, err := fmt.Fscanf(r, "%50s%d ", &addr, &clen)
+	n, err := fmt.Fscanf(r, "%50s %d ", &addr, &clen)
 	if err != nil {
 		return CellAddress{}, "", err
 	}
@@ -411,7 +194,6 @@ func Read(r io.Reader) (CellAddress, string, error) {
 	if err != nil {
 		return CellAddress{}, "", err
 	}
-	//fmt.Printf("Setting cell at [%s] to [%s]\n", addr, string(bs))
 	_, err = fmt.Fscanf(r, "\n")
 	if err != nil {
 		return CellAddress{}, "", err
@@ -429,6 +211,7 @@ func (s *Sheet) Read(r io.Reader) error {
 	if err != nil {
 		return err
 	}
+	//fmt.Printf("SETTING CONTENT: %s\n", a.String())
 	return s.SetContent(a.String(), c)
 }
 

@@ -54,6 +54,30 @@ func TestCellAddr(t *testing.T) {
 	}
 }
 
+func TestEquationLoop(t *testing.T) {
+	assert := assert.New(t)
+	sheet := NewSheet()
+
+	err := sheet.SetContent("A1", "=A2")
+	assert.NoError(err)
+	err = sheet.SetContent("A2", "=A3")
+	assert.NoError(err)
+	err = sheet.SetContent("A3", "=A1")
+	assert.NoError(err)
+
+	v, err := sheet.ContentAt("A1")
+	assert.NoError(err)
+	assert.Equal("A1: Cyclical equations detected.", v)
+
+	v, err = sheet.ContentAt("A2")
+	assert.NoError(err)
+	assert.Equal("A2: Cyclical equations detected.", v)
+
+	v, err = sheet.ContentAt("A3")
+	assert.NoError(err)
+	assert.Equal("A3: Cyclical equations detected.", v)
+}
+
 func TestSetContent(t *testing.T) {
 	assert := assert.New(t)
 	sheet := NewSheet()
@@ -368,3 +392,28 @@ func TestRead(t *testing.T) {
 	assert.Equal(float64(15), v)
 }
 
+func TestTransient(t *testing.T) {
+	assert := assert.New(t)
+	sheet := NewSheet()
+	sheet.SetContent("A1", "Count")
+	sheet.SetContent("B1", "1")
+	sheet.SetContent("C1", "2")
+	sheet.SetContent("D1", "3")
+	sheet.SetContent("E1", "4")
+	sheet.SetContent("F1", "5")
+	sheet.SetContent("F2", "Total")
+	sheet.SetContent("F3", "=B1+C1+D1+E1")
+
+	sheet.SetContent("F1", "")
+	assert.Nil(sheet.cellAt(CellAddress{col: "F", row: 1}))
+
+	sheet.SetContent("B1", "")
+	if !assert.NotNil(sheet.cellAt(CellAddress{col: "B", row: 1})) {
+		return
+	}
+	assert.Equal(cell_transient, sheet.cellAt(CellAddress{col: "B", row: 1}).cell_type)
+
+	sheet.SetContent("F3", "")
+	assert.Nil(sheet.cellAt(CellAddress{col: "F", row: 3}))
+	assert.Nil(sheet.cellAt(CellAddress{col: "B", row: 1}))
+}
