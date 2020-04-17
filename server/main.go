@@ -7,6 +7,7 @@ import (
 	
 	"github.com/knusbaum/go9p"
 	"github.com/knusbaum/go9p/fs"
+	"github.com/knusbaum/9sheet"
 )
 
 func main() {
@@ -20,8 +21,8 @@ func main() {
 	ctl := fs.NewStreamFile(sheetFS.NewStat("ctl", "glenda", "glenda", 0222), inputStream)
 	sheetFS.Root.AddChild(ctl)
 
-	s := NewSheet()
-	s.OnCellUpdated = func(addr string, c *Cell) {
+	s := sheet.NewSheet()
+	s.OnCellUpdated = func(addr string, c *sheet.Cell) {
 		content, _ := c.Content()
 		outputStream.Write([]byte(fmt.Sprintf("%s %d %s\n", addr, len(content), content)))
 	}
