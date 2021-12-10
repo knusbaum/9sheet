@@ -7,31 +7,33 @@ import (
 	"unicode"
 )
 
-type Op int
+type op int
 
 const (
-	NONE Op = iota
-	ADD  Op = iota
-	SUB  Op = iota
-	MUL  Op = iota
-	DIV  Op = iota
-	LP   Op = iota
-	RP   Op = iota
-	ID   Op = iota
+	NONE op = iota
+	ADD  op = iota
+	SUB  op = iota
+	MUL  op = iota
+	DIV  op = iota
+	LP   op = iota
+	RP   op = iota
+	ID   op = iota
 )
 
-type Token struct {
-	op  Op
+type token struct {
+	op  op
 	val string
 }
 
+// Expression is an equation that can be evaluated on a Sheet.
 type Expression struct {
-	op    Op
+	op    op
 	left  *Expression
 	right *Expression
 	val   string
 }
 
+// upstreamAddrs returns a list of CellAddresses that are used in this equation.
 func (e *Expression) upstreamAddrs() ([]CellAddress, error) {
 	if e.op == ID {
 		addr, err := CellAddr(e.val)
@@ -40,7 +42,7 @@ func (e *Expression) upstreamAddrs() ([]CellAddress, error) {
 		}
 		return []CellAddress{addr}, nil
 	}
-	
+
 	addrs := make([]CellAddress, 0)
 	if e.left != nil {
 		leftas, err := e.left.upstreamAddrs()
@@ -60,12 +62,15 @@ func (e *Expression) upstreamAddrs() ([]CellAddress, error) {
 	return addrs, nil
 }
 
-type Parser struct {
+// parser parses an Equation. See: ParseExpression
+type parser struct {
 	r    *strings.Reader
-	look Token
+	look token
 }
 
-func (p *Parser) unreadToken(tok Token) error {
+// unreadToken returns a token onto the front of the parser's token stream.
+// Only one token can be unread at a time, or an error will occur.
+func (p *parser) unreadToken(tok token) error {
 	if p.look.op != NONE {
 		return fmt.Errorf("Cannot unread more than one token.")
 	}
@@ -73,7 +78,9 @@ func (p *Parser) unreadToken(tok Token) error {
 	return nil
 }
 
-func (p *Parser) nextTok() (tok Token, err error) {
+// nextTok returns the next token from the token stream, or an error if there is an invalid token.
+// err is io.EOF when the end of the stream is reached.
+func (p *parser) nextTok() (tok token, err error) {
 	if p.look.op != NONE {
 		tok = p.look
 		p.look.op = NONE
@@ -82,27 +89,27 @@ func (p *Parser) nextTok() (tok Token, err error) {
 	}
 	rn, _, err := p.r.ReadRune()
 	if err != nil {
-		return Token{}, err
+		return token{}, err
 	}
 
 	switch rn {
 	case rune('-'):
-		return Token{op: SUB}, nil
+		return token{op: SUB}, nil
 	case rune('+'):
-		return Token{op: ADD}, nil
+		return token{op: ADD}, nil
 	case rune('*'):
-		return Token{op: MUL}, nil
+		return token{op: MUL}, nil
 	case rune('/'):
-		return Token{op: DIV}, nil
+		return token{op: DIV}, nil
 	case rune('('):
-		return Token{op: LP}, nil
+		return token{op: LP}, nil
 	case rune(')'):
-		return Token{op: RP}, nil
+		return token{op: RP}, nil
 	}
 
 	if !(unicode.IsLetter(rn) || unicode.IsDigit(rn)) {
 		ret := string([]rune{rn})
-		return Token{}, fmt.Errorf("Unexpected rune %s", ret)
+		return token{}, fmt.Errorf("Unexpected rune %s", ret)
 	}
 
 	var rs []rune
@@ -114,25 +121,12 @@ func (p *Parser) nextTok() (tok Token, err error) {
 		p.r.UnreadRune()
 	}
 
-	return Token{op: ID, val: string(rs)}, nil
+	return token{op: ID, val: string(rs)}, nil
 }
 
-// EXP = MDSEXP PMSEXP
-// PMSEXP = ADD MDSEXP PMSEXP | SUB MDSEXP PMSEXP | END
-// MDSEXP = SUBEXP MDEXP
-// MDEXP = MUL SUBEXP MDEXP | DIV SUBEXP MDEXP | END
-// SUBEXP = LP EXP RP | ID
-
-// ID = '[a-zA-Z0-9]+'
-// ADD = '+'
-// SUB = '-'
-// MUL = '*'
-// DIV = '/'
-// LP = '('
-// RP = ')'
-// OP = [+-*/]
-
-func (p *Parser) expectTok(t Token) error {
+// expectTok is used to consume an expected token, t, from the stream. if the next token is not ==
+// t or there are no more tokens, expectTok returns an error.
+func (p *parser) expectTok(t token) error {
 	tok, err := p.nextTok()
 	if err != nil {
 		return err
@@ -144,7 +138,7 @@ func (p *Parser) expectTok(t Token) error {
 }
 
 // SUBEXP = LP EXP RP | ID
-func (p *Parser) parseSUBEXP() (*Expression, error) {
+func (p *parser) parseSUBEXP() (*Expression, error) {
 	tok, err := p.nextTok()
 	if err != nil {
 		return nil, err
@@ -156,7 +150,7 @@ func (p *Parser) parseSUBEXP() (*Expression, error) {
 		if err != nil {
 			return nil, err
 		}
-		err = p.expectTok(Token{op: RP})
+		err = p.expectTok(token{op: RP})
 		if err != nil {
 			return nil, err
 		}
@@ -168,7 +162,7 @@ func (p *Parser) parseSUBEXP() (*Expression, error) {
 }
 
 // MDEXP = MUL SUBEXP MDEXP | DIV SUBEXP MDEXP | END
-func (p *Parser) parseMDEXP(left *Expression) (*Expression, error) {
+func (p *parser) parseMDEXP(left *Expression) (*Expression, error) {
 	tok, err := p.nextTok()
 	if err == io.EOF {
 		// We are at the end of the epression.
@@ -187,7 +181,7 @@ func (p *Parser) parseMDEXP(left *Expression) (*Expression, error) {
 	}
 	// not EOF and not MUL or DIV, so not part of this production.
 	// We want to unread the token to not lose it.
-	err = p.unreadToken(tok) 
+	err = p.unreadToken(tok)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +189,7 @@ func (p *Parser) parseMDEXP(left *Expression) (*Expression, error) {
 }
 
 // MDSEXP = SUBEXP MDEXP
-func (p *Parser) parseMDSEXP() (*Expression, error) {
+func (p *parser) parseMDSEXP() (*Expression, error) {
 	exp, err := p.parseSUBEXP()
 	if err != nil {
 		return nil, err
@@ -204,7 +198,7 @@ func (p *Parser) parseMDSEXP() (*Expression, error) {
 }
 
 // PMSEXP = ADD MDSEXP PMSEXP | SUB MDSEXP PMSEXP | END
-func (p *Parser) parsePMSEXP(left *Expression) (*Expression, error) {
+func (p *parser) parsePMSEXP(left *Expression) (*Expression, error) {
 	tok, err := p.nextTok()
 	if err == io.EOF {
 		// We are at the end of the epression.
@@ -223,15 +217,15 @@ func (p *Parser) parsePMSEXP(left *Expression) (*Expression, error) {
 	}
 	// not EOF and not ADD or SUB, so not part of this production.
 	// We want to unread the token to not lose it.
-	err = p.unreadToken(tok) 
+	err = p.unreadToken(tok)
 	if err != nil {
 		return nil, err
 	}
 	return left, nil
 }
 
-// EXP = MDSEXP PMSEXP
-func (p *Parser) parseEXP() (*Expression, error) {
+//  EXP = MDSEXP PMSEXP
+func (p *parser) parseEXP() (*Expression, error) {
 	exp, err := p.parseMDSEXP()
 	if err != nil {
 		return nil, err
@@ -251,10 +245,27 @@ func expectStr(r *strings.Reader, s string) error {
 	return nil
 }
 
+// ParseExpression parses an EXP according to the below grammar. ParseExpression is implemented as
+// a hand-written recursive descent parse.
+//
+//  EXP = MDSEXP PMSEXP
+//  PMSEXP = ADD MDSEXP PMSEXP | SUB MDSEXP PMSEXP | END
+//  MDSEXP = SUBEXP MDEXP
+//  MDEXP = MUL SUBEXP MDEXP | DIV SUBEXP MDEXP | END
+//  SUBEXP = LP EXP RP | ID
+
+//  ID = '[a-zA-Z0-9]+'
+//  ADD = '+'
+//  SUB = '-'
+//  MUL = '*'
+//  DIV = '/'
+//  LP = '('
+//  RP = ')'
+//  OP = [+-*/]
 func ParseExpression(eqn string) (*Expression, error) {
 	r := strings.NewReader(eqn)
 	expectStr(r, "=")
-	prs := Parser{r: r}
+	prs := parser{r: r}
 	p := &prs
 	e, err := p.parseEXP()
 	if err != nil {
