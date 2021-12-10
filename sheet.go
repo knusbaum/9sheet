@@ -1,6 +1,7 @@
 package sheet
 
 import (
+	"encoding/csv"
 	"fmt"
 	"io"
 )
@@ -120,8 +121,11 @@ func (s *Sheet) EditAt(addr string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	return s.editAt(a)
+}
 
-	cell := s.cellAt(a)
+func (s *Sheet) editAt(addr CellAddress) (string, error) {
+	cell := s.cellAt(addr)
 	if cell == nil {
 		// Empty cells have zero value
 		return "", nil
@@ -129,7 +133,8 @@ func (s *Sheet) EditAt(addr string) (string, error) {
 	return cell.EditValue()
 }
 
-func (s *Sheet) maxCol() CellAddress {
+// MaxCol returns the last column containing a cell with a value in the sheet.
+func (s *Sheet) MaxCol() CellAddress {
 	max := CellAddress{col: "A", row: 1}
 	for k := range s.matrix {
 		//fmt.Printf("KEY: %s\n", k)
@@ -142,7 +147,8 @@ func (s *Sheet) maxCol() CellAddress {
 	return max
 }
 
-func (s *Sheet) maxRow() uint32 {
+// MaxRow returns the highest number row containing a cell with a value in the sheet.
+func (s *Sheet) MaxRow() uint32 {
 	max := uint32(1)
 	for _, col := range s.matrix {
 		for k := range col {
@@ -154,11 +160,22 @@ func (s *Sheet) maxRow() uint32 {
 	return max
 }
 
+// MaxAddr returns the highest (by row and column) CellAddress for a sheet. The highest address is
+// defined by the highest row value in the sheet where the row contains a Cell with a value, and
+// the highest column value where the column contains a value. The cell at CellAddress may not
+// contain a value. Instead, can be thought of the bottom-right corner of the spreadsheet, where
+// all cells with content are contained between A1 and s.MaxAddr().
+func (s *Sheet) MaxAddr() CellAddress {
+	max := s.MaxCol()
+	max.row = s.MaxRow()
+	return max
+}
+
 // WriteCSV writes out a CSV containing the contents of the sheet. This uses the ContentAt function
 // to write human-readable values of the cells, including the results of the evaluated equations.
 func (s *Sheet) WriteCSV(w io.Writer) {
-	for row := uint32(1); row <= s.maxRow(); row++ {
-		mc := s.maxCol()
+	for row := uint32(1); row <= s.MaxRow(); row++ {
+		mc := s.MaxCol()
 		var err error
 		col := CellAddress{col: "A", row: row}
 		for {
@@ -168,11 +185,50 @@ func (s *Sheet) WriteCSV(w io.Writer) {
 			if err != nil {
 				panic(err)
 			}
-			if !col.LessCol(mc) {
+			if !col.LEQCol(mc) {
 				break
 			}
 		}
 		fmt.Fprintln(w, "")
+	}
+}
+
+func (s *Sheet) WriteCSV2(w io.Writer, headers, edit bool) {
+	cw := csv.NewWriter(w)
+	defer cw.Flush()
+	if headers {
+		hs := []string{""}
+		a, _ := CellAddr("A1")
+		for ; a.LEQCol(s.MaxAddr()); a, _ = a.NextCol() {
+			hs = append(hs, a.Column())
+		}
+		cw.Write(hs)
+	}
+	mc := s.MaxCol()
+	for row := uint32(1); row <= s.MaxRow(); row++ {
+		rv := []string{}
+		if headers {
+			rv = append(rv, fmt.Sprintf("%d", row))
+		}
+		var err error
+		col := CellAddress{col: "A", row: row}
+		for {
+			var c string
+			if edit {
+				c, _ = s.editAt(col)
+			} else {
+				c, _ = s.contentAt(col) // We ignore errors
+			}
+			rv = append(rv, c)
+			col, err = col.NextCol()
+			if err != nil {
+				panic(err)
+			}
+			if !col.LEQCol(mc) {
+				break
+			}
+		}
+		cw.Write(rv)
 	}
 }
 
@@ -230,7 +286,7 @@ func read(r io.Reader) (CellAddress, string, error) {
 	return a, string(bs), nil
 }
 
-// Read reads a stream of instructions (such as those written by WriteRange) and sets the values in the sheet.
+// Read reads an instruction (such as those written by WriteRange) and sets the value in the sheet.
 // Instructions are in the form:
 //  [address] value\n
 // For example, you can set various fields in the sheet by doing the following:
@@ -243,6 +299,6 @@ func (s *Sheet) Read(r io.Reader) error {
 	if err != nil {
 		return err
 	}
-	//fmt.Printf("SETTING CONTENT: %s\n", a.String())
+	fmt.Printf("SETTING CONTENT: %s to [%#v]\n", a.String(), c)
 	return s.SetContent(a.String(), c)
 }

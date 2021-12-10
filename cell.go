@@ -15,6 +15,16 @@ type CellAddress struct {
 	row uint32
 }
 
+// Row returns the numeric row of the Cell.
+func (ca CellAddress) Row() uint32 {
+	return ca.row
+}
+
+// Column returns the alphabetical column of the Cell.
+func (ca CellAddress) Column() string {
+	return ca.col
+}
+
 const maxColDigits = 2
 const lastCol = "ZZ"
 
@@ -49,6 +59,11 @@ func CellAddr(addr string) (CellAddress, error) {
 	}
 
 	return CellAddress{colstr, uint32(row)}, nil
+}
+
+func NewCellAddr(col string, row uint32) (CellAddress, error) {
+	// TODO: This is a little silly:
+	return CellAddr(fmt.Sprintf("%s%d", col, row))
 }
 
 // LEQCol returns true if ca's column is less or equal to ca2's column.

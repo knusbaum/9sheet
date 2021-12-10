@@ -280,14 +280,14 @@ func TestMaxCol(t *testing.T) {
 	err = sheet.SetContent("C3", "1")
 	assert.NoError(err)
 
-	a := sheet.maxCol()
+	a := sheet.MaxCol()
 	assert.Equal(CellAddress{col: "C", row: 1}, a)
 
 	//fmt.Println("BREAK")
 	err = sheet.SetContent("FT1", "1")
 	assert.NoError(err)
 
-	a = sheet.maxCol()
+	a = sheet.MaxCol()
 	assert.Equal(CellAddress{col: "FT", row: 1}, a)
 }
 
@@ -302,13 +302,13 @@ func TestMaxRow(t *testing.T) {
 	err = sheet.SetContent("C10", "1")
 	assert.NoError(err)
 
-	row := sheet.maxRow()
+	row := sheet.MaxRow()
 	assert.Equal(uint32(23), row)
 
 	err = sheet.SetContent("ZZ2991", "1")
 	assert.NoError(err)
 
-	row = sheet.maxRow()
+	row = sheet.MaxRow()
 	assert.Equal(uint32(2991), row)
 }
 
@@ -386,7 +386,7 @@ func TestRead(t *testing.T) {
 			break
 		}
 	}
-	
+
 	v, err := sheet.ValueAt("F3")
 	assert.NoError(err)
 	assert.Equal(float64(15), v)
